@@ -230,22 +230,22 @@ _T_AsyncPool = TypeVar("_T_AsyncPool", bound=AsyncPool)
 class WrappedSyncManager(AsyncManager[_T]):
     _wrapped: Manager[_T]
     _blocker: Executor
-    _loop: asyncio.AbstractEventLoop
 
     def __init__(self, manager: Manager[_T], blocker: Executor) -> None:
         self._wrapped = manager
         self._blocker = blocker
-        self._loop = asyncio.get_event_loop()
 
     async def create(self) -> _T:
-        return await self._loop.run_in_executor(self._blocker, self._wrapped.create)
+        return await asyncio.get_event_loop().run_in_executor(
+            self._blocker, self._wrapped.create
+        )
 
     async def recycle(self, obj: _T) -> None:
-        return await self._loop.run_in_executor(
+        return await asyncio.get_event_loop().run_in_executor(
             self._blocker, self._wrapped.recycle, obj
         )
 
     async def discard(self, obj: _T) -> None:
-        return await self._loop.run_in_executor(
+        return await asyncio.get_event_loop().run_in_executor(
             self._blocker, self._wrapped.discard, obj
         )
