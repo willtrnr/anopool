@@ -1,0 +1,46 @@
+[tool.poetry]
+name = "anopool"
+version = "0.1.0"
+description = "Generic sync and async object pools."
+license = "MIT"
+authors = ["William Turner <william.turner@aero.bombardier.com>"]
+readme = "README.rst"
+homepage = "https://github.com/willtrnr/anopool"
+repository = "https://github.com/willtrnr/anopool"
+documentation = "https://github.com/willtrnr/anopool"
+keywords = ["anopool", "pool", "pooling"]
+
+[tool.poetry.dependencies]
+python = "^3.6.2"
+
+[tool.poetry.dev-dependencies]
+black = "^21.10b0"
+isort = "^5.10.1"
+pylint = "^2.11.1"
+
+[tool.black]
+
+[tool.pylint.message-control]
+disable = """
+  duplicate-code,
+  useless-import-alias,
+"""
+
+[tool.pylint.basic]
+good-names-rgxs = "^_?[A-Z]$,^_?T_."
+
+[tool.pylint.design]
+max-branches = 20
+
+[tool.pyright]
+
+[tool.isort]
+profile = "black"
+skip_gitignore = true
+treat_all_comments_as_code = true
+combine_as_imports = true
+combine_star = true
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
