@@ -8,6 +8,7 @@ __all__ = [
 ]
 
 import contextlib
+import dataclasses
 import logging
 import queue
 import threading
@@ -59,6 +60,15 @@ class Manager(Generic[_T], metaclass=ABCMeta):
         """
 
 
+# pylint: disable=missing-class-docstring
+@dataclasses.dataclass
+class PoolState(Generic[_T]):
+    is_open: threading.Event
+    count: threading.Semaphore
+    lock: threading.Condition
+    idle: queue.SimpleQueue[_T]
+
+
 class Pool(Generic[_T]):
     """An object pool.
 
@@ -69,10 +79,8 @@ class Pool(Generic[_T]):
 
     _manager: Manager[_T]
     _max_size: int
-    _is_open: threading.Event
-    _count: threading.Semaphore
-    _lock: threading.Condition
-    _pool: queue.SimpleQueue[_T]
+
+    _state: PoolState[_T]
 
     def __init__(
         self,
@@ -94,10 +102,12 @@ class Pool(Generic[_T]):
         self.close()
 
     def _init_state(self) -> None:
-        self._is_open = threading.Event()
-        self._count = threading.BoundedSemaphore(self._max_size)
-        self._lock = threading.Condition(lock=threading.Lock())
-        self._pool = queue.SimpleQueue()
+        self._state = PoolState(
+            is_open=threading.Event(),
+            count=threading.BoundedSemaphore(self._max_size),
+            lock=threading.Condition(lock=threading.Lock()),
+            idle=queue.SimpleQueue(),
+        )
 
     def is_open(self) -> bool:
         """Check if the pool is open.
@@ -105,33 +115,31 @@ class Pool(Generic[_T]):
         Returns:
             bool: Whether the pool is open.
         """
-        return self._is_open.is_set()
+        return self._state.is_open.is_set()
 
     def open(self) -> None:
         """Initialize the pool."""
-        self._is_open.set()
+        self._state.is_open.set()
 
     def close(self) -> None:
         """Close the pool and discard its objects."""
-        is_open = self._is_open
-        if not is_open.is_set():
-            return
+        state = self._state
 
-        lock = self._lock
-        pool = self._pool
+        if not state.is_open.is_set():
+            return
 
         self._init_state()
 
-        is_open.clear()
+        state.is_open.clear()
         while True:
             try:
-                self._manager.discard(pool.get_nowait())
+                self._manager.discard(state.idle.get_nowait())
             except queue.Empty:
                 break
             except Exception:  # pylint: disable=broad-except
-                logger.warning("Discard error", exc_info=True)
-        with lock:
-            lock.notify_all()
+                logger.warning("Discard error, possible resource leak", exc_info=True)
+        with state.lock:
+            state.lock.notify_all()
 
     @contextlib.contextmanager
     def acquire(self) -> Generator[_T, None, None]:
@@ -140,63 +148,63 @@ class Pool(Generic[_T]):
         Yields:
             An object from the pool.
         """
-        is_open = self._is_open
-        count = self._count
-        lock = self._lock
-        pool = self._pool
+        state = self._state
 
         while True:
-            if not is_open.is_set():
+            if not state.is_open.is_set():
                 raise PoolClosedError()
 
             # Try to get an object from the pool first
             try:
-                obj = pool.get_nowait()
+                obj = state.idle.get_nowait()
                 logger.debug("Checked out object from pool: %s", obj)
                 break
             except queue.Empty:
                 pass
 
             # If we can allocate more, create a new one
-            if count.acquire(blocking=False):  # pylint: disable=consider-using-with
+            # pylint: disable=consider-using-with
+            if state.count.acquire(blocking=False):
                 try:
                     obj = self._manager.create()
                     logger.debug("Created new object: %s", obj)
                     break
                 except:
-                    count.release()
+                    state.count.release()
                     raise
 
             # Wait until an object is available or we can allocate more
-            with lock:
+            with state.lock:
                 logger.debug("Waiting for free object or slot")
-                lock.wait()
+                state.lock.wait()
 
         try:
             yield obj
         finally:
             try:
-                if not is_open.is_set():
+                if not state.is_open.is_set():
                     raise PoolClosedError()
 
                 self._manager.recycle(obj)
                 logger.debug("Object succeeded recycle: %s", obj)
 
-                if not is_open.is_set():
+                if not state.is_open.is_set():
                     raise PoolClosedError()
 
-                pool.put(obj)
+                state.idle.put(obj)
                 logger.debug("Object returned to pool: %s", obj)
             except Exception:  # pylint: disable=broad-except
                 logger.debug("Recycle failed discarding: %s", obj, exc_info=True)
                 try:
                     self._manager.discard(obj)
                 except Exception:  # pylint: disable=broad-except
-                    logger.warning("Discard error", exc_info=True)
-                count.release()
+                    logger.warning(
+                        "Discard error, possible resource leak", exc_info=True
+                    )
+                state.count.release()
             finally:
-                with lock:
-                    lock.notify()
+                with state.lock:
+                    state.lock.notify()
 
 
 _T_Pool = TypeVar("_T_Pool", bound=Pool)

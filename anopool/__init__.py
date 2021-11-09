@@ -11,15 +11,6 @@ __all__ = [
     "PoolError",
 ]
 
-from .async_pool import (
-    AsyncManager as AsyncManager,
-    AsyncPool as AsyncPool,
-)
-from .exceptions import (
-    PoolClosedError as PoolClosedError,
-    PoolError as PoolError,
-)
-from .pool import (
-    Manager as Manager,
-    Pool as Pool,
-)
+from .async_pool import AsyncManager as AsyncManager, AsyncPool as AsyncPool
+from .exceptions import PoolClosedError as PoolClosedError, PoolError as PoolError
+from .pool import Manager as Manager, Pool as Pool

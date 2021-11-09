@@ -9,7 +9,9 @@ __all__ = [
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
+import queue
 import threading
 from abc import ABCMeta
 from concurrent.futures import Executor
@@ -74,6 +76,15 @@ class AsyncManager(Generic[_T], metaclass=ABCMeta):
         return WrappedSyncManager(manager, blocker)
 
 
+# pylint: disable=missing-class-docstring
+@dataclasses.dataclass
+class AsyncPoolState(Generic[_T]):
+    is_open: asyncio.Event
+    count: threading.Semaphore
+    lock: asyncio.Condition
+    idle: queue.SimpleQueue[_T]
+
+
 class AsyncPool(Generic[_T]):
     """An async object pool.
 
@@ -84,10 +95,8 @@ class AsyncPool(Generic[_T]):
 
     _manager: AsyncManager[_T]
     _max_size: int
-    _is_open: asyncio.Event
-    _count: threading.Semaphore
-    _lock: asyncio.Condition
-    _pool: asyncio.Queue[_T]
+
+    _state: AsyncPoolState[_T]
 
     def __init__(
         self,
@@ -101,10 +110,12 @@ class AsyncPool(Generic[_T]):
         self._init_state()
 
     def _init_state(self):
-        self._is_open = asyncio.Event()
-        self._count = threading.BoundedSemaphore(self._max_size)
-        self._lock = asyncio.Condition(lock=asyncio.Lock())
-        self._pool = asyncio.Queue(maxsize=self._max_size)
+        self._state = AsyncPoolState(
+            is_open=asyncio.Event(),
+            count=threading.BoundedSemaphore(self._max_size),
+            lock=asyncio.Condition(lock=asyncio.Lock()),
+            idle=queue.SimpleQueue(),
+        )
 
     async def __aenter__(self: _T_AsyncPool) -> _T_AsyncPool:
         await self.open()
@@ -120,33 +131,31 @@ class AsyncPool(Generic[_T]):
         Returns:
             bool: Whether the pool is open.
         """
-        return self._is_open.is_set()
+        return self._state.is_open.is_set()
 
     async def open(self) -> None:
         """Initialize the pool."""
-        self._is_open.set()
+        self._state.is_open.set()
 
     async def close(self) -> None:
         """Close the pool and discard its objects."""
-        is_open = self._is_open
-        if not is_open.is_set():
-            return
+        state = self._state
 
-        lock = self._lock
-        pool = self._pool
+        if not state.is_open.is_set():
+            return
 
         self._init_state()
 
-        is_open.clear()
+        state.is_open.clear()
         while True:
             try:
-                await self._manager.discard(pool.get_nowait())
-            except asyncio.QueueEmpty:
+                await self._manager.discard(state.idle.get_nowait())
+            except queue.Empty:
                 break
             except Exception:  # pylint: disable=broad-except
-                logger.warning("Discard error", exc_info=True)
-        async with lock:
-            lock.notify_all()
+                logger.warning("Discard error, possible resource leak", exc_info=True)
+        async with state.lock:
+            state.lock.notify_all()
 
     @contextlib.asynccontextmanager
     async def acquire(self) -> AsyncGenerator[_T, None]:
@@ -155,63 +164,63 @@ class AsyncPool(Generic[_T]):
         Yields:
             An object from the pool.
         """
-        is_open = self._is_open
-        count = self._count
-        lock = self._lock
-        pool = self._pool
+        state = self._state
 
         while True:
-            if not is_open.is_set():
+            if not state.is_open.is_set():
                 raise PoolClosedError()
 
             # Try to get an object from the pool first
             try:
-                obj = pool.get_nowait()
+                obj = state.idle.get_nowait()
                 logger.debug("Checked out object from pool: %s", obj)
                 break
             except asyncio.QueueEmpty:
                 pass
 
             # If we can allocate more, create a new one
-            if count.acquire(blocking=False):  # pylint: disable=consider-using-with
+            # pylint: disable=consider-using-with
+            if state.count.acquire(blocking=False):
                 try:
                     obj = await self._manager.create()
                     logger.debug("Created new object: %s", obj)
                     break
                 except:
-                    count.release()
+                    state.count.release()
                     raise
 
             # Wait until an object is available or we can allocate more
-            async with lock:
+            async with state.lock:
                 logger.debug("Waiting for free object or slot")
-                await lock.wait()
+                await state.lock.wait()
 
         try:
             yield obj
         finally:
             try:
-                if not is_open.is_set():
+                if not state.is_open.is_set():
                     raise PoolClosedError()
 
                 await self._manager.recycle(obj)
                 logger.debug("Object succeeded recycle: %s", obj)
 
-                if not is_open.is_set():
+                if not state.is_open.is_set():
                     raise PoolClosedError()
 
-                await pool.put(obj)
+                state.idle.put(obj)
                 logger.debug("Object returned to pool: %s", obj)
             except Exception:  # pylint: disable=broad-except
                 logger.debug("Recycle failed discarding: %s", obj, exc_info=True)
                 try:
                     await self._manager.discard(obj)
                 except Exception:  # pylint: disable=broad-except
-                    logger.warning("Discard error", exc_info=True)
-                count.release()
+                    logger.warning(
+                        "Discard error, possible resource leak", exc_info=True
+                    )
+                state.count.release()
             finally:
-                async with lock:
-                    lock.notify()
+                async with state.lock:
+                    state.lock.notify()
 
 
 _T_AsyncPool = TypeVar("_T_AsyncPool", bound=AsyncPool)
@@ -221,22 +230,22 @@ _T_AsyncPool = TypeVar("_T_AsyncPool", bound=AsyncPool)
 class WrappedSyncManager(AsyncManager[_T]):
     _wrapped: Manager[_T]
     _blocker: Executor
+    _loop: asyncio.AbstractEventLoop
 
     def __init__(self, manager: Manager[_T], blocker: Executor) -> None:
         self._wrapped = manager
         self._blocker = blocker
+        self._loop = asyncio.get_event_loop()
 
     async def create(self) -> _T:
-        return await asyncio.get_event_loop().run_in_executor(
-            self._blocker, self._wrapped.create
-        )
+        return await self._loop.run_in_executor(self._blocker, self._wrapped.create)
 
     async def recycle(self, obj: _T) -> None:
-        return await asyncio.get_event_loop().run_in_executor(
+        return await self._loop.run_in_executor(
             self._blocker, self._wrapped.recycle, obj
         )
 
     async def discard(self, obj: _T) -> None:
-        return await asyncio.get_event_loop().run_in_executor(
+        return await self._loop.run_in_executor(
             self._blocker, self._wrapped.discard, obj
         )
