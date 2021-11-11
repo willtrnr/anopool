@@ -1,14 +1,16 @@
 [tool.poetry]
 name = "anopool"
-version = "0.1.0"
-description = "Generic sync and async object pools."
+version = "0.1.0b0"
+description = "Generic thread-safe sync and async object pools."
 license = "MIT"
 authors = ["William Turner <william.turner@aero.bombardier.com>"]
 readme = "README.rst"
 homepage = "https://github.com/willtrnr/anopool"
 repository = "https://github.com/willtrnr/anopool"
-documentation = "https://github.com/willtrnr/anopool"
 keywords = ["anopool", "pool", "pooling"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+]
 
 [tool.poetry.dependencies]
 python = "^3.6.2"
@@ -19,6 +21,7 @@ isort = "^5.10.1"
 pylint = "^2.11.1"
 
 [tool.black]
+target-version = ["py36", "py37", "py38", "py39"]
 
 [tool.pylint.message-control]
 disable = """
@@ -37,7 +40,6 @@ max-branches = 20
 [tool.isort]
 profile = "black"
 skip_gitignore = true
-treat_all_comments_as_code = true
 combine_as_imports = true
 combine_star = true
 
