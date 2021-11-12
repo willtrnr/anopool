@@ -177,7 +177,7 @@ class AsyncPool(Generic[_T]):
                 obj = state.idle.get_nowait()
                 logger.debug("Checked out object from pool: %s", obj)
                 break
-            except asyncio.QueueEmpty:
+            except queue.Empty:
                 pass
 
             # If we can allocate more, create a new one
