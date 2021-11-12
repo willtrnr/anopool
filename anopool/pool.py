@@ -13,7 +13,7 @@ import logging
 import queue
 import threading
 from abc import ABCMeta
-from typing import Generator, Generic, TypeVar
+from typing import Generator, Generic, Optional, TypeVar
 
 from ._common import DEFAULT_SIZE
 from .exceptions import PoolClosedError
@@ -85,9 +85,11 @@ class Pool(Generic[_T]):
     def __init__(
         self,
         manager: Manager[_T],
-        max_size: int = DEFAULT_SIZE,
+        max_size: Optional[int] = None,
     ) -> None:
-        if max_size <= 0:
+        if max_size is None:
+            max_size = DEFAULT_SIZE
+        elif max_size <= 0:
             raise ValueError("max_size must be at least 1")
         self._manager = manager
         self._max_size = max_size

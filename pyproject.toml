@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "anopool"
-version = "0.1.0b0"
+version = "0.1.0b1"
 description = "Generic thread-safe sync and async object pools."
 license = "MIT"
 authors = ["William Turner <william.turner@aero.bombardier.com>"]

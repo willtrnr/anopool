@@ -8,4 +8,4 @@ __all__ = [
 
 import os
 
-DEFAULT_SIZE = min(len(os.sched_getaffinity(0)) * 4, 24) or 4
+DEFAULT_SIZE = min(len(os.sched_getaffinity(0)) + 4, 32)
